@@ -1,26 +1,31 @@
+from random import randint
+
 from kmk.keys import make_argumented_key
 from kmk.modules import Module
-from random import randint
 
 
 class RapidFireMeta:
     def __init__(
         self,
         kc,
-        repeat=100,
-        wait=200,
-        randomize_repeat=False,
-        randomize_magnitude=15,
+        interval=100,
+        timeout=200,
+        enable_interval_randomization=False,
+        randomization_magnitude=15,
+        toggle=False,
     ):
         self.kc = kc
-        self.repeat = repeat
-        self.wait = wait
-        self.randomize_repeat = randomize_repeat
-        self.randomize_magnitude = randomize_magnitude
+        self.interval = interval
+        self.timeout = timeout
+        self.enable_interval_randomization = enable_interval_randomization
+        self.randomization_magnitude = randomization_magnitude
+        self.toggle = toggle
 
 
 class RapidFire(Module):
     _active_keys = {}
+    _toggled_keys = []
+    _waiting_keys = []
 
     def __init__(self):
         make_argumented_key(
@@ -31,34 +36,50 @@ class RapidFire(Module):
         )
 
     def _get_repeat(self, key):
-        if key.meta.randomize_repeat:
-            return key.meta.repeat + randint(
-                -key.meta.randomize_magnitude, key.meta.randomize_magnitude
+        if key.meta.enable_interval_randomization:
+            return key.meta.interval + randint(
+                -key.meta.randomization_magnitude, key.meta.randomization_magnitude
             )
-        return key.meta.repeat
+        return key.meta.interval
 
-    def _on_repeat_timeout(self, key, keyboard):
+    def _on_timer_timeout(self, key, keyboard):
         keyboard.tap_key(key.meta.kc)
-        repeat_timeout_key = keyboard.set_timeout(
-            self._get_repeat(key),
-            lambda: self._on_repeat_timeout(key, keyboard),
+        if key in self._waiting_keys:
+            self._waiting_keys.remove(key)
+        if key.meta.toggle and key not in self._toggled_keys:
+            self._toggled_keys.append(key)
+        self._active_keys[key] = keyboard.set_timeout(
+            self._get_repeat(key), lambda: self._on_timer_timeout(key, keyboard)
         )
-        self._active_keys[key] = repeat_timeout_key
-
-    def _on_wait_timeout(self, key, keyboard):
-        self._on_repeat_timeout(key, keyboard)
 
     def _rf_pressed(self, key, keyboard, *args, **kwargs):
-        keyboard.tap_key(key.meta.kc)
-        wait_timeout_key = keyboard.set_timeout(
-            key.meta.wait, lambda: self._on_wait_timeout(key, keyboard)
-        )
-        self._active_keys[key] = wait_timeout_key
+        if key in self._toggled_keys:
+            self._toggled_keys.remove(key)
+            self._deactivate_key(key, keyboard)
+            return
+        if key.meta.timeout > 0:
+            keyboard.tap_key(key.meta.kc)
+            self._waiting_keys.append(key)
+            self._active_keys[key] = keyboard.set_timeout(
+                key.meta.timeout, lambda: self._on_timer_timeout(key, keyboard)
+            )
+        else:
+            self._on_timer_timeout(key, keyboard)
 
     def _rf_released(self, key, keyboard, *args, **kwargs):
-        if key in self._active_keys:
-            keyboard.cancel_timeout(self._active_keys[key])
-            self._active_keys.pop(key)
+        if key not in self._active_keys:
+            return
+        if key in self._toggled_keys:
+            if key not in self._waiting_keys:
+                return
+            self._toggled_keys.remove(key)
+        if key in self._waiting_keys:
+            self._waiting_keys.remove(key)
+        self._deactivate_key(key, keyboard)
+
+    def _deactivate_key(self, key, keyboard):
+        keyboard.cancel_timeout(self._active_keys[key])
+        self._active_keys.pop(key)
 
     def during_bootup(self, keyboard):
         return
